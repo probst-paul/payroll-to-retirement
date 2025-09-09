@@ -172,11 +172,9 @@ def match_template_to_csv(df_t: pd.DataFrame, df_c: pd.DataFrame) -> pd.DataFram
     t1["__MT__"] = "strict"
 
     # ---------- Identify which template rows are NOT done yet ----------
-    # Start with all template rows; mark those already matched strictly
     t_all = t.copy()
     t_all["_JOINED"] = False
     if not t1.empty:
-        # Build an index of template key rows that matched (regardless of match/no-match on CSV side)
         matched_keys = set(t1["_T_KEY_STRICT"])
         t_all.loc[t_all["_T_KEY_STRICT"].isin(matched_keys), "_JOINED"] = True
 
@@ -196,12 +194,77 @@ def match_template_to_csv(df_t: pd.DataFrame, df_c: pd.DataFrame) -> pd.DataFram
 
     # ---------- COMBINE & LABEL ----------
     both = pd.concat([t1, fill], ignore_index=True, sort=False)
-    # Default to __MT__ label, then downgrade truly missing to unmatched
     both["_MATCH_TYPE"] = both["__MT__"]
     both.loc[both["_C_LAST"].isna(), "_MATCH_TYPE"] = "unmatched"
     both.drop(columns=["__MT__"], inplace=True)
 
     return both
+
+# ============================================================
+# Field mapping + numeric coercion + verification only
+# ============================================================
+
+# Raw CSV column names (after alias normalization)
+RAW_PRETAX            = "401k"
+RAW_PRETAX_CATCHUP    = "401k Catchup"      # optional
+RAW_ROTH              = "Roth 401K"
+RAW_ROTH_CATCHUP      = "Roth Catchup"      # optional
+RAW_SAFE_HARBOR_NE    = "401K Match 2"
+RAW_GROSS_PAY         = "Gross Pay"
+RAW_HRS_REG           = "Regular Hours"
+RAW_HRS_OT            = "Overtime Hours"
+RAW_HRS_PTO           = "Vacation/PTO Hours"  # optional
+
+# Template/output columns to fill
+T_PRETAX              = "Pretax"
+T_PRETAX_CATCHUP      = "Pre-Tax Catchup"
+T_ROTH                = "Roth"
+T_ROTH_CATCHUP        = "Roth Catchup"
+T_SAFE_HARBOR_NE      = "Safe Harbor Non-Elective"
+T_GROSS_PAY           = "Current Period Compensation"
+T_HOURS_WORKED        = "Current Period Hours Worked"
+
+HOURS_COMPONENTS = [RAW_HRS_REG, RAW_HRS_OT, RAW_HRS_PTO]
+CHECKSUM_COLUMNS = [T_PRETAX, T_PRETAX_CATCHUP, T_ROTH, T_ROTH_CATCHUP, T_SAFE_HARBOR_NE]
+
+def to_num(x) -> float:
+    """'$1,234.50 ' -> 1234.5 ; blanks/None/invalid -> 0.0"""
+    if pd.isna(x): return 0.0
+    s = str(x).strip()
+    if s == "": return 0.0
+    s = re.sub(r"[,$% ]", "", s)
+    try: return float(s)
+    except: return 0.0
+
+def apply_field_mapping(matched: pd.DataFrame) -> pd.DataFrame:
+    """
+    From a name-matched dataframe (template <- raw),
+    create/overwrite the dynamic template columns using raw columns.
+    Missing raw columns are treated as 0/blank.
+    """
+    out = matched.copy()
+
+    # Ensure raw sources exist
+    for c in [RAW_PRETAX, RAW_PRETAX_CATCHUP, RAW_ROTH, RAW_ROTH_CATCHUP,
+              RAW_SAFE_HARBOR_NE, RAW_GROSS_PAY, RAW_HRS_REG, RAW_HRS_OT, RAW_HRS_PTO]:
+        if c not in out.columns:
+            out[c] = 0
+
+    # Map numeric fields
+    out[T_PRETAX]              = out[RAW_PRETAX].map(to_num)
+    out[T_PRETAX_CATCHUP]      = out[RAW_PRETAX_CATCHUP].map(to_num)
+    out[T_ROTH]                = out[RAW_ROTH].map(to_num)
+    out[T_ROTH_CATCHUP]        = out[RAW_ROTH_CATCHUP].map(to_num)
+    out[T_SAFE_HARBOR_NE]      = out[RAW_SAFE_HARBOR_NE].map(to_num)
+    out[T_GROSS_PAY]           = out[RAW_GROSS_PAY].map(to_num)
+
+    # Hours = Reg + OT + PTO (PTO may be missing)
+    reg = out[RAW_HRS_REG].map(to_num)
+    ot  = out[RAW_HRS_OT].map(to_num)
+    pto = out[RAW_HRS_PTO].map(to_num) if RAW_HRS_PTO in out.columns else 0.0
+    out[T_HOURS_WORKED] = reg + ot + pto
+
+    return out
 
 # ============================================================
 # Main entry
@@ -232,8 +295,7 @@ def main():
     print("\nFirst 5 rows:")
     print(df.head(5).to_string(index=False))
 
-    # Step 3: Name matching (with a dummy template just for demo)
-    # In real use, load your roster template from templates/roster.csv or .xlsx
+    # Step 3: Name matching (use roster if available)
     tmpl_path = Path("templates/roster.csv")
     if tmpl_path.exists():
         df_t = pd.read_csv(tmpl_path, dtype=str).fillna("")
@@ -242,8 +304,33 @@ def main():
         print("  strict :", (matched["_MATCH_TYPE"] == "strict").sum())
         print("  loose  :", (matched["_MATCH_TYPE"] == "loose").sum())
         print("  unmatch:", (matched["_MATCH_TYPE"] == "unmatched").sum())
+
+        # Step 4: Field mapping + verification (no writing yet)
+        filled = apply_field_mapping(matched)
+
+        # Hours verification
+        comp_vals = []
+        for comp in [RAW_HRS_REG, RAW_HRS_OT, RAW_HRS_PTO]:
+            if comp in filled.columns:
+                v = pd.to_numeric(filled[comp], errors="coerce").fillna(0).map(float).sum()
+                comp_vals.append((comp, v))
+        grand_total_hours = sum(v for _, v in comp_vals)
+
+        print("\n=== Verification: Total Employee Hours ===")
+        for name, v in comp_vals:
+            print(f"  {name:<22}: {v:,.2f}")
+        print(f"  {'GRAND TOTAL':<22}: {grand_total_hours:,.2f}")
+
+        # Contribution checksum
+        checksum = 0.0
+        for col in CHECKSUM_COLUMNS:
+            if col in filled.columns:
+                checksum += pd.to_numeric(filled[col], errors="coerce").fillna(0).sum()
+        print("\n=== Checksum (Pretax + Pre-Tax Catchup + Roth + Roth Catchup + Safe Harbor NE) ===")
+        print(f"  CHECKSUM: ${checksum:,.2f}")
+
     else:
-        print("\n(no template roster found for name matching demo)")
+        print("\n(no template roster found for name matching / mapping)")
 
 if __name__ == "__main__":
     main()
