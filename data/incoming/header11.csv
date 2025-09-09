@@ -1,0 +1,16 @@
+
+
+
+
+
+
+
+
+
+
+
+Pay Date,Transaction Date,Pay Period,Source,Paycheck #,Location Name,Employee Last Name,Employee First Name,Regular Hours,Overtime Hours,Vacation/PTO Hours,Regular,Overtime,Gross Pay,401K,Aflac,Aflac/Disab life,Medical,Roth 401K,Federal Income Tax,Illinois State Tax,Medicare,Social Security,Net Pay,401K Match 2,Company Paid Medical,S Corp Owner Health (Taxable),Employer Medicare Tax,Employer Social Security,Federal Unemployment Tax,Illinois State Unemployment (SUTA),Federal Unemployment Tax,Illinois State Unemployment (SUTA)
+2025-09-05,2025-09-05,08/25/2025 - 09/05/2025,Payroll,1001,Springfield HQ,Doe,Jane A,80,0,0,2400.00,0.00,2400.00,150.00,20.00,0.00,150.00,75.00,200.00,90.00,35.00,150.00,1680.00,50.00,300.00,0.00,35.00,150.00,6.00,15.00,6.00,15.00
+2025-09-05,2025-09-05,08/25/2025 - 09/05/2025,Payroll,1002,Shelbyville Office,Smith,John,85,5,0,2550.00,300.00,2850.00,200.00,15.00,0.00,120.00,100.00,250.00,110.00,40.00,170.00,1865.00,60.00,280.00,0.00,41.00,170.00,7.00,18.00,7.00,18.00
+2025-09-05,2025-09-05,08/25/2025 - 09/05/2025,Payroll,1003,Capital City Plant,Johnson,Emily R,75,0,10,2250.00,0.00,2250.00,175.00,10.00,0.00,100.00,50.00,180.00,85.00,33.00,140.00,1477.00,40.00,250.00,0.00,33.00,140.00,5.00,14.00,5.00,14.00
+2025-09-05,2025-09-05,08/25/2025 - 09/05/2025,Payroll,1004,Ogdenville Branch,Williams,Michael B,70,5,0,2100.00,150.00,2250.00,100.00,25.00,0.00,110.00,0.00,160.00,75.00,29.00,120.00,1706.00,30.00,220.00,0.00,29.00,120.00,4.00,12.00,4.00,12.00
