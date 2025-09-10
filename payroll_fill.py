@@ -14,20 +14,25 @@ def norm(s: str) -> str:
 # Canonical headers we expect
 EXPECT_NAMES = [
     "Employee Last Name", "Employee First Name",
-    "401k", "Roth 401K", "401K Match 2", "Gross Pay",
+    "401k", "401k Catchup", "Roth 401K", "Roth Catchup", "401K Match 2", "Gross Pay",
     "Regular Hours", "Overtime Hours", "Vacation/PTO Hours",
     "Pay Date",
 ]
 
 # Aliases for vendor variations
+# NOTE: Do NOT alias "Regular" or "Overtime" to hours; those are $ columns in many exports.
 ALIASES = {
     "Roth 401K": ["Roth 401k", "Roth401k", "Roth-401k"],
-    "401k": ["401(k)", "401 k", "Pre tax 401k", "Pre-tax 401k"],
-    "401K Match 2": ["401k Match2", "401K Match2", "Safe Harbor Non Elective", "Safe Harbor"],
+    "401k": ["401(k)", "401 k", "Pre tax 401k", "Pre-tax 401k", "401K"],
+    "401k Catchup": ["401k Catch-up", "401(k) Catchup", "Pre-Tax Catchup", "Pre Tax Catchup", "Pre-tax Catchup"],
+    "Roth Catchup": ["Roth 401k Catchup", "Roth Catch-up", "Roth Catch up"],
+    "401K Match 2": ["401k Match2", "401K Match2", "Safe Harbor Non Elective", "Safe Harbor", "Safe Harbor Match"],
     "Gross Pay": ["Gross", "Gross Wages", "Current Period Compensation"],
-    "Regular Hours": ["Reg Hours", "Regular", "Base Hours"],
-    "Overtime Hours": ["OT Hours", "Overtime"],
+
+    "Regular Hours": ["Reg Hours", "Base Hours"],
+    "Overtime Hours": ["OT Hours"],
     "Vacation/PTO Hours": ["PTO Hours", "Vacation Hours", "Paid Time Off", "Leave Hours"],
+
     "Employee First Name": ["Emp First Name", "Employee First", "First"],
     "Employee Last Name": ["Emp Last Name", "Employee Last", "Last"],
     "Pay Date": ["Paydate", "Pay Dt", "Check Date"],
@@ -129,7 +134,6 @@ def prepare_template_names(df_t: pd.DataFrame) -> pd.DataFrame:
     out["_T_FIRST"] = out.get(T_FIRST, "").astype(str).map(_clean_token)
     out["_T_MI"]    = out.get(T_MI, "").astype(str).map(lambda x: x[:1].upper() if x else "")
     out["_T_LAST"]  = out.get(T_LAST, "").astype(str).map(_strip_suffix)
-
     out["_T_KEY_LOOSE"]  = out["_T_LAST"].map(_norm_key_part) + "|" + out["_T_FIRST"].map(_norm_key_part)
     out["_T_KEY_STRICT"] = out["_T_KEY_LOOSE"] + "|" + out["_T_MI"]
     return out
@@ -139,11 +143,9 @@ def prepare_csv_names(df_c: pd.DataFrame) -> pd.DataFrame:
     last = out.get(C_LAST, "").astype(str).map(_strip_suffix)
     first_raw = out.get(C_FIRST, "").astype(str)
     parsed = first_raw.map(_extract_first_and_mi_from_csv)
-
     out["_C_FIRST"] = parsed.map(lambda x: _clean_token(x[0]))
     out["_C_MI"]    = parsed.map(lambda x: x[1])
     out["_C_LAST"]  = last
-
     out["_C_KEY_LOOSE"]  = out["_C_LAST"].map(_norm_key_part) + "|" + out["_C_FIRST"].map(_norm_key_part)
     out["_C_KEY_STRICT"] = out["_C_KEY_LOOSE"] + "|" + out["_C_MI"]
     return out
@@ -201,7 +203,7 @@ def match_template_to_csv(df_t: pd.DataFrame, df_c: pd.DataFrame) -> pd.DataFram
     return both
 
 # ============================================================
-# Field mapping + numeric coercion + verification only
+# Step 4: Field mapping + numeric coercion
 # ============================================================
 
 # Raw CSV column names (after alias normalization)
@@ -236,6 +238,12 @@ def to_num(x) -> float:
     try: return float(s)
     except: return 0.0
 
+def _ensure_series(s):
+    """If a duplicate column name produced a DataFrame, pick the first column."""
+    if isinstance(s, pd.DataFrame):
+        return s.iloc[:, 0]
+    return s
+
 def apply_field_mapping(matched: pd.DataFrame) -> pd.DataFrame:
     """
     From a name-matched dataframe (template <- raw),
@@ -251,20 +259,36 @@ def apply_field_mapping(matched: pd.DataFrame) -> pd.DataFrame:
             out[c] = 0
 
     # Map numeric fields
-    out[T_PRETAX]              = out[RAW_PRETAX].map(to_num)
-    out[T_PRETAX_CATCHUP]      = out[RAW_PRETAX_CATCHUP].map(to_num)
-    out[T_ROTH]                = out[RAW_ROTH].map(to_num)
-    out[T_ROTH_CATCHUP]        = out[RAW_ROTH_CATCHUP].map(to_num)
-    out[T_SAFE_HARBOR_NE]      = out[RAW_SAFE_HARBOR_NE].map(to_num)
-    out[T_GROSS_PAY]           = out[RAW_GROSS_PAY].map(to_num)
+    out[T_PRETAX]              = _ensure_series(out[RAW_PRETAX]).map(to_num)
+    out[T_PRETAX_CATCHUP]      = _ensure_series(out[RAW_PRETAX_CATCHUP]).map(to_num)
+    out[T_ROTH]                = _ensure_series(out[RAW_ROTH]).map(to_num)
+    out[T_ROTH_CATCHUP]        = _ensure_series(out[RAW_ROTH_CATCHUP]).map(to_num)
+    out[T_SAFE_HARBOR_NE]      = _ensure_series(out[RAW_SAFE_HARBOR_NE]).map(to_num)
+    out[T_GROSS_PAY]           = _ensure_series(out[RAW_GROSS_PAY]).map(to_num)
 
     # Hours = Reg + OT + PTO (PTO may be missing)
-    reg = out[RAW_HRS_REG].map(to_num)
-    ot  = out[RAW_HRS_OT].map(to_num)
-    pto = out[RAW_HRS_PTO].map(to_num) if RAW_HRS_PTO in out.columns else 0.0
+    reg = _ensure_series(out[RAW_HRS_REG]).map(to_num) if RAW_HRS_REG in out.columns else 0.0
+    ot  = _ensure_series(out[RAW_HRS_OT]).map(to_num)  if RAW_HRS_OT  in out.columns else 0.0
+    pto = _ensure_series(out[RAW_HRS_PTO]).map(to_num) if RAW_HRS_PTO in out.columns else 0.0
     out[T_HOURS_WORKED] = reg + ot + pto
 
     return out
+
+# ============================================================
+# Step 5: Interactive verification gate (no writing yet)
+# ============================================================
+
+def press_any_key():
+    """Cross-platform 'press any key' fallback."""
+    try:
+        import msvcrt
+        print("\nPress any key to exit...")
+        msvcrt.getch()
+    except Exception:
+        try:
+            input("\nPress Enter to exit...")
+        except EOFError:
+            pass
 
 # ============================================================
 # Main entry
@@ -288,49 +312,88 @@ def main():
     alias_map = build_alias_map(EXPECT_NAMES, ALIASES)
     df = rename_by_alias(df, alias_map)
 
+    # Safety net: drop duplicate columns (keep first)
+    df = df.loc[:, ~df.columns.duplicated()]
+
     print("\nColumns parsed (normalized):")
     for c in df.columns:
         print(" -", c)
 
     print("\nFirst 5 rows:")
-    print(df.head(5).to_string(index=False))
+    with pd.option_context("display.max_columns", None):
+        print(df.head(5).to_string(index=False))
+
+    # Keep a copy of the normalized INCOMING CSV for verification
+    df_in = df.copy()
+
+    # ---------- VERIFICATION FROM INCOMING CSV ----------
+    def col_sum(df_, name):
+        return pd.to_numeric(df_.get(name, pd.Series(dtype=float)), errors="coerce").fillna(0).map(to_num).sum()
+
+    reg = col_sum(df_in, RAW_HRS_REG)
+    ot  = col_sum(df_in, RAW_HRS_OT)
+    pto = col_sum(df_in, RAW_HRS_PTO)
+    grand_total_hours = reg + ot + pto
+
+    pretax      = col_sum(df_in, RAW_PRETAX)
+    pretax_cu   = col_sum(df_in, RAW_PRETAX_CATCHUP)
+    roth        = col_sum(df_in, RAW_ROTH)
+    roth_cu     = col_sum(df_in, RAW_ROTH_CATCHUP)
+    safeharbor  = col_sum(df_in, RAW_SAFE_HARBOR_NE)
+    checksum    = pretax + pretax_cu + roth + roth_cu + safeharbor
+
+    print("\n=== Verification: Totals from INCOMING CSV ===")
+    print(f"  {RAW_HRS_REG:<22}: {reg:,.2f}")
+    print(f"  {RAW_HRS_OT:<22}: {ot:,.2f}")
+    print(f"  {RAW_HRS_PTO:<22}: {pto:,.2f}")
+    print(f"  {'GRAND TOTAL HOURS':<22}: {grand_total_hours:,.2f}")
+
+    print("\n=== Contribution Columns Found (INCOMING CSV) ===")
+    for nm, val in [
+        (RAW_PRETAX, pretax),
+        (RAW_PRETAX_CATCHUP, pretax_cu),
+        (RAW_ROTH, roth),
+        (RAW_ROTH_CATCHUP, roth_cu),
+        (RAW_SAFE_HARBOR_NE, safeharbor),
+    ]:
+        exists = "yes" if nm in df_in.columns else "NO"
+        print(f"  {nm:<20} present: {exists:>3} | total: {val:,.2f}")
+
+    print("\n=== Checksum (INCOMING CSV) ===")
+    print(f"  CHECKSUM: ${checksum:,.2f}")
 
     # Step 3: Name matching (use roster if available)
     tmpl_path = Path("templates/roster.csv")
-    if tmpl_path.exists():
-        df_t = pd.read_csv(tmpl_path, dtype=str).fillna("")
-        matched = match_template_to_csv(df_t, df)
-        print("\n=== Step 3: Name match summary ===")
-        print("  strict :", (matched["_MATCH_TYPE"] == "strict").sum())
-        print("  loose  :", (matched["_MATCH_TYPE"] == "loose").sum())
-        print("  unmatch:", (matched["_MATCH_TYPE"] == "unmatched").sum())
-
-        # Step 4: Field mapping + verification (no writing yet)
-        filled = apply_field_mapping(matched)
-
-        # Hours verification
-        comp_vals = []
-        for comp in [RAW_HRS_REG, RAW_HRS_OT, RAW_HRS_PTO]:
-            if comp in filled.columns:
-                v = pd.to_numeric(filled[comp], errors="coerce").fillna(0).map(float).sum()
-                comp_vals.append((comp, v))
-        grand_total_hours = sum(v for _, v in comp_vals)
-
-        print("\n=== Verification: Total Employee Hours ===")
-        for name, v in comp_vals:
-            print(f"  {name:<22}: {v:,.2f}")
-        print(f"  {'GRAND TOTAL':<22}: {grand_total_hours:,.2f}")
-
-        # Contribution checksum
-        checksum = 0.0
-        for col in CHECKSUM_COLUMNS:
-            if col in filled.columns:
-                checksum += pd.to_numeric(filled[col], errors="coerce").fillna(0).sum()
-        print("\n=== Checksum (Pretax + Pre-Tax Catchup + Roth + Roth Catchup + Safe Harbor NE) ===")
-        print(f"  CHECKSUM: ${checksum:,.2f}")
-
-    else:
+    if not tmpl_path.exists():
         print("\n(no template roster found for name matching / mapping)")
+        return
+
+    df_t = pd.read_csv(tmpl_path, dtype=str).fillna("")
+    matched = match_template_to_csv(df_t, df_in)
+    print("\n=== Step 3: Name match summary ===")
+    print("  strict :", (matched["_MATCH_TYPE"] == "strict").sum())
+    print("  loose  :", (matched["_MATCH_TYPE"] == "loose").sum())
+    print("  unmatch:", (matched["_MATCH_TYPE"] == "unmatched").sum())
+
+    # Helpful debug if nothing matched
+    if (matched["_MATCH_TYPE"] == "unmatched").all():
+        print("\n[debug] Example keys (template vs csv):")
+        t_dbg = prepare_template_names(df_t).head(3)[["_T_LAST", "_T_FIRST", "_T_MI", "_T_KEY_STRICT", "_T_KEY_LOOSE"]]
+        c_dbg = prepare_csv_names(df_in).head(3)[["_C_LAST", "_C_FIRST", "_C_MI", "_C_KEY_STRICT", "_C_KEY_LOOSE"]]
+        print("  Template keys:\n", t_dbg.to_string(index=False))
+        print("  CSV keys:\n", c_dbg.to_string(index=False))
+
+    # Step 4: Field mapping (template fill; errors prevented by duplicate-drop & _ensure_series)
+    filled = apply_field_mapping(matched)
+
+    # Step 5: Interactive verification gate
+    ans = input("\nProceed with this batch? (verify totals above) [Y/n]: ").strip().lower()
+    if ans in ("n", "no"):
+        print("Aborting per user choice. No files were written.")
+        press_any_key()
+        return
+
+    print("Verified. (Next step will add Pay Date → Check Date mapping, grouping, and writing.)")
 
 if __name__ == "__main__":
     main()
