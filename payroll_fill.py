@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import sys, csv, re, shutil
+import sys, csv, re, shutil, os
 from pathlib import Path
 import pandas as pd
 from typing import Tuple
@@ -14,7 +14,7 @@ def norm(s: str) -> str:
 
 EXPECT_NAMES = [
     "Employee Last Name", "Employee First Name",
-    "401k", "Roth 401K", "401K Match 2", "Gross Pay",
+    "401k", "401k Catchup", "Roth 401K", "Roth Catchup", "401K Match 2", "Gross Pay",
     "Regular Hours", "Overtime Hours", "Vacation/PTO Hours",
     "Pay Date",
 ]
@@ -26,6 +26,7 @@ ALIASES = {
     "Roth Catchup": ["Roth 401k Catchup", "Roth Catch-up", "Roth Catch up"],
     "401K Match 2": ["401k Match2", "401K Match2", "Safe Harbor Non Elective", "Safe Harbor", "Safe Harbor Match"],
     "Gross Pay": ["Gross", "Gross Wages", "Current Period Compensation"],
+    # IMPORTANT: do NOT alias money fields "Regular"/"Overtime" to hours
     "Regular Hours": ["Reg Hours", "Base Hours"],
     "Overtime Hours": ["OT Hours"],
     "Vacation/PTO Hours": ["PTO Hours", "Vacation Hours", "Paid Time Off", "Leave Hours"],
@@ -77,7 +78,7 @@ def rename_by_alias(df: pd.DataFrame, alias_map):
     return df.rename(columns=rename)
 
 # ============================================================
-# Name parsing & matching
+# Name parsing & matching (Template <-> CSV)
 # ============================================================
 
 T_FIRST  = "First Name"
@@ -166,19 +167,20 @@ def match_template_to_csv(df_t: pd.DataFrame, df_c: pd.DataFrame) -> pd.DataFram
 # Field Mapping
 # ============================================================
 
+# Raw CSV columns (post-alias)
 RAW_PRETAX            = "401k"
 RAW_PRETAX_CATCHUP    = "401k Catchup"
 RAW_ROTH              = "Roth 401K"
 RAW_ROTH_CATCHUP      = "Roth Catchup"
 RAW_SAFE_HARBOR_NE    = "401K Match 2"
-RAW_GROSS             = "Gross Pay"          # existing
-RAW_GROSS_PAY         = RAW_GROSS            # <-- compat for tests expecting RAW_GROSS_PAY
+RAW_GROSS             = "Gross Pay"
+RAW_GROSS_PAY         = RAW_GROSS
 RAW_HRS_REG           = "Regular Hours"
 RAW_HRS_OT            = "Overtime Hours"
 RAW_HRS_PTO           = "Vacation/PTO Hours"
 RAW_PAYDATE           = "Pay Date"
 
-
+# Template/output column names
 T_PRETAX              = "Pretax"
 T_PRETAX_CU           = "Pre-Tax Catchup"
 T_ROTH                = "Roth"
@@ -186,10 +188,19 @@ T_ROTH_CU             = "Roth Catchup"
 T_SAFE_HARBOR_NE      = "Safe Harbor Non-Elective"
 T_SAFEHARB            = T_SAFE_HARBOR_NE
 T_COMP                = "Current Period Compensation"
-T_GROSS_PAY           = "Current Period Compensation"  # <-- add this line (compat with tests)
-T_COMP                = T_GROSS_PAY                    # keep internal alias if you still use T_COMP
+T_GROSS_PAY           = "Current Period Compensation"  # compat alias
 T_HOURS_WORKED        = "Current Period Hours Worked"
 T_CHECKDATE           = "Check Date"
+
+# Final upload column order (as requested)
+FINAL_COLUMNS = [
+    "SSN","First Name","MI","Last Name","Check Date",
+    "Pretax","Pre-Tax Catchup","Roth","Roth Catchup","Safe Harbor Non-Elective",
+    "Current Period Compensation","Current Period Hours Worked",
+    "Address 1","Address 2","City","State","Zip",
+    "Date of Birth","Date of Hire","Date of Term","Rehire Date",
+    "Email Address","Profit Share",
+]
 
 def to_num(x) -> float:
     """Coerce currency/number-like strings to float. '$1,234.50 ' -> 1234.5; blanks/None/bad -> 0.0"""
@@ -204,33 +215,72 @@ def to_num(x) -> float:
     except Exception:
         return 0.0
 
-
 def _ensure_series(s):
     if isinstance(s, pd.DataFrame):
         return s.iloc[:, 0]
     return s
 
 def apply_field_mapping(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Expects a DataFrame that already has roster (template) columns + CSV columns
+    (i.e., the result of match_template_to_csv(...), merged).
+    Fills dynamic fields from raw CSV columns, preserves static fields from roster.
+    """
     out = df.copy()
     for col in [RAW_HRS_REG, RAW_HRS_OT, RAW_HRS_PTO, RAW_PRETAX, RAW_PRETAX_CATCHUP,
                 RAW_ROTH, RAW_ROTH_CATCHUP, RAW_SAFE_HARBOR_NE, RAW_GROSS, RAW_PAYDATE]:
         if col not in out.columns:
             out[col] = 0.0
-    out[T_PRETAX]    = _ensure_series(out[RAW_PRETAX]).map(to_num)
-    out[T_PRETAX_CU] = _ensure_series(out[RAW_PRETAX_CATCHUP]).map(to_num)
-    out[T_ROTH]      = _ensure_series(out[RAW_ROTH]).map(to_num)
-    out[T_ROTH_CU]   = _ensure_series(out[RAW_ROTH_CATCHUP]).map(to_num)
-    out[T_SAFEHARB]  = _ensure_series(out[RAW_SAFE_HARBOR_NE]).map(to_num)
-    out[T_COMP]      = _ensure_series(out[RAW_GROSS]).map(to_num)
-    reg = _ensure_series(out[RAW_HRS_REG]).map(to_num)
-    ot  = _ensure_series(out[RAW_HRS_OT]).map(to_num)
-    pto = _ensure_series(out[RAW_HRS_PTO]).map(to_num)
+
+    # Numeric field mapping
+    out[T_PRETAX]        = _ensure_series(out[RAW_PRETAX]).map(to_num)
+    out[T_PRETAX_CU]     = _ensure_series(out[RAW_PRETAX_CATCHUP]).map(to_num)
+    out[T_ROTH]          = _ensure_series(out[RAW_ROTH]).map(to_num)
+    out[T_ROTH_CU]       = _ensure_series(out[RAW_ROTH_CATCHUP]).map(to_num)
+    out[T_SAFEHARB]      = _ensure_series(out[RAW_SAFE_HARBOR_NE]).map(to_num)
+    out[T_COMP]          = _ensure_series(out[RAW_GROSS]).map(to_num)
+
+    # Hours sum = Reg + OT + PTO (PTO may be missing)
+    reg = _ensure_series(out[RAW_HRS_REG]).map(to_num) if RAW_HRS_REG in out.columns else 0.0
+    ot  = _ensure_series(out[RAW_HRS_OT]).map(to_num)  if RAW_HRS_OT  in out.columns else 0.0
+    pto = _ensure_series(out[RAW_HRS_PTO]).map(to_num) if RAW_HRS_PTO in out.columns else 0.0
     out[T_HOURS_WORKED] = reg + ot + pto
-    out[T_CHECKDATE]    = out[RAW_PAYDATE]
+
+    # Check Date = Pay Date from raw
+    out[T_CHECKDATE] = out[RAW_PAYDATE]
+
     return out
 
 # ============================================================
-# Main entry
+# Roster location helper
+# ============================================================
+
+def find_roster_path() -> Path | None:
+    # 1) Environment override
+    rp = os.environ.get("ROSTER_PATH")
+    if rp:
+        p = Path(rp)
+        if p.exists():
+            return p
+
+    # 2) cwd/templates/roster.csv
+    p = Path("templates/roster.csv")
+    if p.exists():
+        return p
+
+    # 3) script_dir/templates/roster.csv
+    try:
+        script_dir = Path(__file__).resolve().parent
+        p = script_dir / "templates" / "roster.csv"
+        if p.exists():
+            return p
+    except Exception:
+        pass
+
+    return None
+
+# ============================================================
+# Main
 # ============================================================
 
 def main():
@@ -239,15 +289,22 @@ def main():
         print(f"❌ File not found: {csv_path}")
         return
 
+    # Step 1: detect header & load
     hdr_idx = detect_header_row(csv_path, EXPECT_NAMES + list(ALIASES.keys()))
     df = pd.read_csv(csv_path, header=0, skiprows=hdr_idx, engine="python", sep=None, dtype=str, encoding="utf-8-sig")
     df = df.loc[:, ~(df.columns.astype(str).str.strip() == "")]
+    # Step 2: alias normalization (+ safety duplicate drop)
     alias_map = build_alias_map(EXPECT_NAMES, ALIASES)
     df = rename_by_alias(df, alias_map)
     df = df.loc[:, ~df.columns.duplicated()]
     df_in = df.copy()
 
-    # Verification
+    print(f"Detected header row at line: {hdr_idx}")
+    print("\nColumns parsed (normalized):")
+    for c in df_in.columns:
+        print(" -", c)
+
+    # Step 3: verification on INCOMING CSV (pre-roster)
     def col_sum(df_, name):
         return pd.to_numeric(df_.get(name, pd.Series(dtype=float)), errors="coerce").fillna(0).map(to_num).sum()
 
@@ -275,30 +332,76 @@ def main():
         print("Aborting per user choice. No files were written.")
         return
 
-    # Apply mapping
-    filled = apply_field_mapping(df_in)
-
-    # Archive incoming file
+    # ---- Archive incoming file EARLY so tests expecting archive still pass
     archive_dir = Path("data/archive")
     archive_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     shutil.copy2(csv_path, archive_dir / f"{csv_path.stem}-{ts}{csv_path.suffix}")
 
-    # Write one output per Pay Date
+    # Step 4: load roster template & match
+    tmpl_path = find_roster_path()
+    if tmpl_path is None:
+        print("❌ templates/roster.csv not found. Set ROSTER_PATH or place roster under ./templates/.")
+        return
+    roster = pd.read_csv(tmpl_path, dtype=str).fillna("")
+
+    matched = match_template_to_csv(roster, df_in)
+
+    # Some visibility
+    print("\n=== Name match summary ===")
+    print("  strict :", (matched["_MATCH_TYPE"] == "strict").sum())
+    print("  loose  :", (matched["_MATCH_TYPE"] == "loose").sum())
+    print("  unmatch:", (matched["_MATCH_TYPE"] == "unmatched").sum())
+
+    # Step 5: map dynamic fields onto matched rows
+    filled = apply_field_mapping(matched)
+
+    # Step 6: keep only employees with activity (strict/loose matches)
+    active = filled[filled["_MATCH_TYPE"].isin(["strict", "loose"])].copy()
+
+    # Step 7: build final upload frame in required order (fill missing columns with blanks)
+    for col in FINAL_COLUMNS:
+        if col not in active.columns:
+            active[col] = ""
+
+    upload = active[FINAL_COLUMNS].copy()
+
+    # Step 9: write one output per Check/Pay Date
     dist_dir = Path("dist")
     dist_dir.mkdir(parents=True, exist_ok=True)
-    if RAW_PAYDATE not in filled.columns:
-        print("❌ No Pay Date column found in incoming CSV.")
+
+    if T_CHECKDATE not in upload.columns:
+        print("❌ No Check Date found after mapping.")
         return
-    for pay_date, group in filled.groupby(RAW_PAYDATE):
+
+    groups = upload.groupby(T_CHECKDATE, dropna=False)
+    written = []
+    for check_date, group in groups:
+        # Normalize/parse date string
         try:
-            dt = datetime.strptime(str(pay_date).strip(), "%Y-%m-%d").date()
+            dt = datetime.strptime(str(check_date).strip(), "%Y-%m-%d").date()
+            date_str = dt.isoformat()
         except Exception:
-            dt = datetime.now().date()
-        out_name = f"PayrollUpload-{dt.isoformat()}.csv"
+            # If bad/missing date, bucket under 'unknown'
+            date_str = "unknown"
+
+        out_name = f"PayrollUpload-{date_str}.csv"
         out_path = dist_dir / out_name
         group.to_csv(out_path, index=False)
-        print(f"✅ Wrote {len(group)} rows to {out_path}")
+        written.append((out_path, len(group)))
+
+    print("")
+    for p, n in written:
+        print(f"✅ Wrote {n} rows to {p}")
+
+    # Optional: write a small unmatched report
+    um = filled[filled["_MATCH_TYPE"] == "unmatched"]
+    if not um.empty:
+        rpt = dist_dir / f"unmatched-{ts}.csv"
+        cols = ["First Name","MI","Last Name","Employee Last Name","Employee First Name","_MATCH_TYPE"]
+        keep_cols = [c for c in cols if c in um.columns]
+        um.to_csv(rpt, index=False, columns=keep_cols)
+        print(f"⚠️  Unmatched roster rows: {len(um)} (details: {rpt})")
 
     input("\nPress Enter to exit...")
 

@@ -1,6 +1,7 @@
+# tests/test_ouputs.py
 from pathlib import Path
 import importlib.util
-import pandas as pd
+import pandas as pd   # ✅ add this
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "payroll_fill.py"
@@ -14,6 +15,27 @@ def load_script():
 def test_step6_writes_outputs_and_archives(tmp_path, monkeypatch):
     # Work in a clean temp directory so dist/ and data/archive/ are isolated
     monkeypatch.chdir(tmp_path)
+
+    # --- NEW: create a matching roster and point ROSTER_PATH at it ---
+    tmpl_dir = tmp_path / "templates"
+    tmpl_dir.mkdir(parents=True, exist_ok=True)
+
+    roster_cols = [
+        "SSN","First Name","MI","Last Name",
+        "Address 1","Address 2","City","State","Zip",
+        "Date of Birth","Date of Hire","Date of Term","Rehire Date",
+        "Email Address","Profit Share"
+    ]
+    roster_df = pd.DataFrame([
+        ["111-22-3333","Jane","A","Doe","100 Main St","","Springfield","IL","62701","","","","","jane@example.com",""],
+        ["222-33-4444","John","","Smith","200 Oak Ave","","Shelbyville","IL","62565","","","","","john@example.com",""],
+        ["333-44-5555","Emily","R","Johnson","300 Pine Rd","","Capital City","IL","62702","","","","","emily@example.com",""],
+    ], columns=roster_cols)
+    roster_path = tmpl_dir / "roster.csv"
+    roster_df.to_csv(roster_path, index=False, encoding="utf-8")
+
+    # Point the script to this roster
+    monkeypatch.setenv("ROSTER_PATH", str(roster_path))
 
     # Create a minimal input with 2 pay dates
     src = tmp_path / "in.csv"
@@ -53,13 +75,11 @@ def test_step6_writes_outputs_and_archives(tmp_path, monkeypatch):
 
     # Assert outputs (one per Pay Date)
     outs = sorted((tmp_path / "dist").glob("PayrollUpload-*.csv"))
-    assert len(outs) == 2
+    assert len(outs) == 2, outs
 
-    # Verify row counts by date
-    want = {
-        "PayrollUpload-2025-09-05.csv": 2,
-        "PayrollUpload-2025-09-12.csv": 1,
-    }
-    got = {p.name: len(pd.read_csv(p, dtype=str)) for p in outs}
-    for name, rows in want.items():
-        assert got.get(name) == rows, f"{name} should have {rows} rows, got {got.get(name)}"
+    # Verify row counts per date
+    out_map = {p.name: p for p in outs}
+    df_0505 = pd.read_csv(out_map["PayrollUpload-2025-09-05.csv"], dtype=str)
+    df_0912 = pd.read_csv(out_map["PayrollUpload-2025-09-12.csv"], dtype=str)
+    assert len(df_0505) == 2
+    assert len(df_0912) == 1
